@@ -1,0 +1,280 @@
+#!/bin/bash
+#xmalytd00 Malytskyi Denys
+#04.03.2024
+
+
+export POSIXLY_CORRECT=yes
+export LC_ALL=C
+
+if [[ $# -eq 0 ]]; then
+	echo "ERR: No args" >&2
+	exit 1
+fi
+
+if [[ $1 == "-h" || $1 == "-help" ]]; then
+	echo "This is a script to help you filter out information about transactions :)"
+	exit 0
+fi
+
+#check the arguments
+
+default_filter=("-a" "-b" "-c")
+default_command=("list" "list-currency" "status" "profit")
+filter_a=""
+filter_b=""
+filter_c=""
+filter_arg_time_a=""
+filter_arg_time_b=""
+filter_arg_curr=""
+comm=""
+user=""
+
+n=0
+
+for i in "$@"; do
+	if [[ " ${default_command[@]} " =~ " $i " ]]; then
+		((n= $n + 1 ))
+	fi
+done
+if [[ $n -gt 1 ]]; then
+	echo "ERR: more than 1 command" >&2
+	exit 1
+fi
+
+for ((i = 1; i <= $#; i++)); do
+	if [[ "${!i}" == "-a" ]]; then
+		filter_a=1
+		next_index=$(( i + 1 ))
+		if [[ ${!next_index} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$  ]]; then
+			filter_arg_time_a="${!next_index}"	
+		else
+			echo "wrong time a" >&2
+			exit 1
+		fi
+	fi
+	if [[ "${!i}" == "-b" ]]; then
+		filter_b=1
+		next_index=$(( i + 1 ))
+		if [[ ${!next_index} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$  ]]; then
+			filter_arg_time_b="${!next_index}"
+		else
+			echo "wrong time b" >&2
+			exit 1
+		fi
+	fi
+	if [[ "${!i}" == "-c" ]]; then
+		filter_c=1
+		next_index=$(( i + 1 ))
+		if [[ ${!next_index} =~ ^[A-Z]{3}$ ]]; then
+			filter_arg_curr="${!next_index}"
+		else
+			echo "wrong curr arg" >&2
+			exit 1
+		fi
+	fi
+	if [[ " ${default_command[*]} " == *"${!i}"* && "-c" != "${!i}" ]]; then
+		comm="${!i}"
+	fi
+	if [[ ! "${!i}" == *.log* ]]; then
+		user="${!i}"
+	fi
+done
+
+if [ -n "$filter_a" -a -n "$filter_b" ]; then
+	if [[ "$filter_arg_time_a" > "$filter_arg_time_b" ]]; then
+		echo "ERR: wrong time interval (a>b)" >&2
+		exit 1
+	fi
+fi
+
+#finding out log files postion
+
+n=0
+
+
+for arg in "$@"; do
+	if [[ $arg == *.log  || $arg == *.gz ]]; then
+		break
+	else
+		((n= $n + 1 ))
+	fi
+done
+
+shift "$n"
+logs=("$@")
+
+
+filtered=""
+
+#applying both -a -b filters
+
+if [ -n "$filter_a" -a -n "$filter_b" ]; then
+	for ((i = 0; i < ${#logs[@]}; i++)); do
+		if [[ ${logs[i]} == *.gz ]]; then
+			curr_filtered=$(gunzip -c "${logs[i]}" | awk -F ';' -v start="$filter_arg_time_a" -v end="$filter_arg_time_b" '$2 > start && $2 < end')
+		else
+			curr_filtered=$(awk -F ';' -v start="$filter_arg_time_a" -v end="$filter_arg_time_b" '$2 > start && $2 < end' "${logs[i]}")
+		fi
+		if [[ "$i" -eq 0 ]]; then
+			filtered="$curr_filtered"
+		else
+			filtered="$filtered"$'\n'"$curr_filtered"
+		fi
+	done
+fi
+
+#appplying either -a OR -b filter
+
+#-a
+
+if [ -n "$filter_a" -a -z "$filter_b" ]; then
+	for((i=0; i < ${#logs[@]}; i++)); do
+		if [[ ${logs[i]} == *.gz ]]; then
+			curr_filtered=$(gunzip -c "${logs[i]}" | awk -F ';' -v start="$filter_arg_time_a" '$2 > start')
+		else
+			curr_filtered=$(awk -F ';' -v start="$filter_arg_time_a" '$2 > start' "${logs[i]}")
+		fi
+		if [[ "$i" -eq 0 ]]; then
+			filtered="$curr_filtered"
+		else
+			filtered="$filtered"$'\n'"$curr_filtered"
+		fi
+	done
+fi
+
+#-b
+
+if [ -z "$filter_a" -a -n "$filter_b" ]; then
+	for((i=0; i < ${#logs[@]}; i++)); do
+		if [[ ${logs[i]}  == *.gz ]]; then
+			curr_filtered=$(gunzip -c "${logs[i]}" | awk -F ';' -v end="$filter_arg_time_b" '$2 < end')
+		else
+			curr_filtered=$(awk -F ';' -v end="$filter_arg_time_b" '$2 <end' "${logs[i]}") 
+		fi			
+       		if [[ "$i" -eq 0  ]]; then
+			filtered="$curr_filtered"
+		else
+			filtered="$filtered"$'\n'"$curr_filtered"
+		fi
+	done
+
+fi
+
+#applying -c filter
+
+if [ -n "$filter_c" ]; then
+	if [ -z "$filtered" ]; then
+		for((i=0; i < ${#logs[@]}; i++)); do
+			if [[ ${logs[i]} == *.gz ]]; then
+				curr_filtered=$(gunzip -c "${logs[i]}"| awk -F ';' -v filter_arg="$filter_arg_curr" '$3 == filter_arg')
+			else
+				curr_filtered=$(awk -F ';' -v filter_arg="$filter_arg_curr" '$3 == filter_arg' "${logs[i]}")
+			fi
+			if [[ "$i" -eq 0 ]]; then
+				filtered="$curr_filtered"
+			else
+				filtered="$filtered"$'\n'"$curr_filtered"
+			fi
+		done
+	else
+		filtered=$(echo "$filtered"|awk -F ';' -v filter_arg="$filter_arg_curr" '$3 == filter_arg')
+	fi
+fi
+
+#Commands
+
+if [ -z "$filter" -a -z "$filter_arg" -a -z "$comm" -a -n "$user" ]; then
+	if [ -n "$filtered" ] || [ -n "$filter_a" ] || [ -n "$filter_b" ] || [ -n "$filter_c" ]; then
+		echo "$filtered" | grep "\b$user\b" 
+	
+	else
+		for ((i = 0; i < ${#logs[@]}; i++)); do
+			if [[ ${logs[i]}  == *.gz ]];then 
+				gunzip -c "${logs[i]}" | grep "\b$user\b"
+
+			else
+				grep "\b$user\b" "${logs[i]}"
+			fi
+
+		done
+	fi
+exit 0
+fi
+
+if [[ "$comm" == "list" ]]; then
+	if [ -n "$filtered" ] || [ -n "$filter_a" ] || [ -n "$filter_b" ] || [ -n "$filter_c" ]; then
+		echo "$filtered" | grep "\b$user\b"
+	else	
+		for ((i = 0; i < ${#logs[@]}; i++)); do
+			if [[ ${logs[i]} == *.gz  ]];then
+				gunzip -c "${logs[i]}" | grep "\b$user\b"
+			else	
+				grep "\b$user\b" "${logs[i]}"
+			fi	
+		done
+	fi
+exit 0
+fi
+
+if [[ "$comm" == "list-currency" ]]; then
+	if [ -n "$filtered" ] || [ -n "$filter_a" ] || [ -n "$filter_b" ] || [ -n "$filter_c" ]; then
+		echo "$filtered" | grep "\b$user\b" | cut -d';' -f3 | sort
+	else
+		for ((i = 0; i < ${#logs[@]}; i++)); do
+			if [[ ${logs[i]} == *.gz  ]]; then
+				gunzip -c "${logs[i]}" | grep "\b$user\b" | cut -d';' -f3
+			else
+				grep "\b$user\b" "${logs[i]}" | cut -d';' -f3
+			fi
+		done | uniq | sort
+	fi
+exit 0
+fi
+
+if [[ "$comm" == "status" ]]; then
+        if [ -n "$filtered" ] || [ -n "$filter_a" ] || [ -n "$filter_b" ] || [ -n "$filter_c" ]; then
+		echo "$filtered" | grep "\b$user\b" | cut -d';' -f3,4 | awk -F';' '{sums[$1] += $2} END {for (key in sums) printf "%s : %.4f\n" ,key, sums[key]}' | sort
+	else
+		for ((i = 0; i < ${#logs[@]}; i++)); do
+			if [[ ${logs[i]} == *.gz ]]; then	
+				gunzip -c "${logs[i]}" | grep "\b$user\b" | cut -d';' -f3,4 | awk -F';' '{sums[$1] += $2} END {for (key in sums) printf "%s;%.4f\n" ,key, sums[key]}'
+			else
+				grep "\b$user\b" "${logs[i]}" | cut -d';' -f3,4 |  awk -F';' '{sums[$1] += $2} END {for (key in sums) printf "%s;%.4f\n" ,key, sums[key]}' 
+			fi
+		done | sort | awk -F';' '{sums[$1] += $2} END {for (key in sums) printf "%s : %.4f\n" ,key, sums[key]}' | sort
+	fi
+exit 0
+fi
+
+if [[ "$comm" == "profit" ]]; then
+	if ! [ -n "$XTF_PROFIT" ]; then
+		XTF_PROFIT=20
+	fi
+	if [ -n "$filtered" ] || [ -n "$filter_a" ] || [ -n "$filter_b" ] || [ -n "$filter_c" ]; then
+		echo "$filtered" | grep "\b$user\b" | cut -d';' -f3,4 | awk -F';' '{sums[$1] += $2} END {for (key in sums) printf "%s;%.4f\n" ,key, sums[key]}' | awk -v profit="$XTF_PROFIT" -F';' '{
+																					if ($2 > 0 ){
+																						printf "%s : %.4f\n", $1, $2 * (1 + profit / 100);
+																					}	else {
+																						printf "%s : %.4f\n", $1, $2;
+																					}
+																				}' | sort
+		exit 0
+	else
+	for ((i = 0; i < ${#logs[@]}; i++)) do
+		if [[ ${logs[i]} == *.gz ]]; then
+			gunzip -c "${logs[i]}" | grep "\b$user\b" | cut -d';' -f3,4 | awk -F';' '{sums[$1] += $2} END {for (key in sums) printf "%s;%.4f\n" ,key, sums[key]}'
+		else
+			grep "\b$user\b" "${logs[i]}" | cut -d';' -f3,4 | awk -F';' '{sums[$1] += $2} END {for (key in sums) printf "%s;%.4f\n" ,key, sums[key]}'
+		fi
+	done | sort |  awk -F';' '{sums[$1] += $2} END {for (key in sums) printf "%s;%.4f\n" ,key, sums[key]}' | awk -v profit="$XTF_PROFIT" -F';' '{
+															if ($2 > 0) {
+																printf "%s : %.4f\n", $1, $2 * (1 + profit / 100);
+															}	else {
+																printf "%s : %.4f\n", $1, $2;
+															}
+														}' | sort
+	fi
+exit 0
+fi
+
+exit 0
